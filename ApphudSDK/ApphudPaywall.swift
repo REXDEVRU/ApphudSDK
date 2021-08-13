@@ -9,16 +9,16 @@ import UIKit
 
 public class ApphudPaywall: NSObject, Codable {
     
-    public internal(set) var identifier: String
-    public internal(set) var isDefault: Bool
+    @objc public internal(set) var identifier: String
+    @objc public internal(set) var isDefault: Bool
     /**
      A/B test functional properties
      */
-    public var experimentId: String?
-    public var variationId: String?
-    public var fromPaywall: String?
+    @objc public var experimentId: String?
+    @objc public var variationId: String?
+    @objc public var fromPaywall: String?
     
-    public var json: [String: Any]? {
+    @objc public var json: [String: Any]? {
         
         guard let string = jsonString, let data = string.data(using: .utf8) else {
             return [:]
@@ -33,7 +33,7 @@ public class ApphudPaywall: NSObject, Codable {
         
         return [:]
     }
-    public internal(set) var products: [ApphudProduct]
+    @objc public internal(set) var products: [ApphudProduct]
     
     internal var id: String
     private var jsonString: String?
