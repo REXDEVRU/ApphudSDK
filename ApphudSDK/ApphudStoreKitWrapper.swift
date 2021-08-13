@@ -197,7 +197,7 @@ internal class ApphudStoreKitWrapper: NSObject, SKPaymentTransactionObserver, SK
                     self.refreshReceiptCallback?()
                     self.refreshReceiptCallback = nil
                 } else {
-                    ApphudInternal.shared.submitReceiptRestore(allowsReceiptRefresh: false)
+                    ApphudInternal.shared.submitReceiptRestoreFail(error: error)
                 }
                 self.refreshRequest = nil
             }

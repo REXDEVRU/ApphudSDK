@@ -32,6 +32,12 @@ extension ApphudInternal {
         submitReceiptRestore(allowsReceiptRefresh: false)
     }
 
+    internal func submitReceiptRestoreFail(error: Error) {
+        apphudLog("App Store receipt submit fail: \(error)", forceDisplay: true)
+        self.restorePurchasesCallback?(nil, nil, error)
+        self.restorePurchasesCallback = nil
+    }
+    
     internal func submitReceiptRestore(allowsReceiptRefresh: Bool) {
         guard let receiptString = apphudReceiptDataString() else {
             if allowsReceiptRefresh {
