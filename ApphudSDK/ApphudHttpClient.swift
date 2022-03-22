@@ -21,6 +21,7 @@ typealias ApphudStringCallback = (String?, Error?) -> Void
 /**
  This is Apphud's internal class.
  */
+@available(OSX 10.14.4, *)
 @available(iOS 11.2, *)
 public class ApphudHttpClient {
 
@@ -36,7 +37,9 @@ public class ApphudHttpClient {
     }
 
     static let productionEndpoint = "https://api.apphud.com"
-    
+    public var sdkType: String = "swift"
+    public var sdkVersion: String = apphud_sdk_version
+
     #if DEBUG
     public static let shared = ApphudHttpClient()
     public var domainUrlString = productionEndpoint
@@ -50,18 +53,18 @@ public class ApphudHttpClient {
     internal var canRetry: Bool {
         !invalidAPiKey && !unauthorized
     }
-    
+
     internal var invalidAPiKey: Bool = false
     internal var unauthorized: Bool = false
-    
+    internal var suspended: Bool = false
+
     private let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
         return URLSession.init(configuration: config)
     }()
-    
-    private let CACHE_TIMEOUT: TimeInterval = 3600.0
+
     private let GET_TIMEOUT: TimeInterval = 10.0
     private let POST_PUT_TIMEOUT: TimeInterval = 40.0
 
@@ -72,8 +75,10 @@ public class ApphudHttpClient {
     }
 
     internal func startRequest(path: String, apiVersion: ApphudApiVersion = .APIV1, params: [String: Any]?, method: ApphudHttpMethod, useDecoder: Bool = false, callback: ApphudHTTPResponseCallback?) {
-        if let request = makeRequest(path: path, apiVersion: apiVersion, params: params, method: method) {
+        if let request = makeRequest(path: path, apiVersion: apiVersion, params: params, method: method), !suspended {
             start(request: request, useDecoder: useDecoder, callback: callback)
+        } else {
+            apphudLog("Unable to perform API requests, because your account has been suspended.", forceDisplay: true)
         }
     }
 
@@ -84,7 +89,7 @@ public class ApphudHttpClient {
             apphudLog("using cached html data for screen id = \(screenID)", logLevel: .all)
             return
         }
-        
+
         if let request = makeScreenRequest(screenID: screenID) {
 
             apphudLog("started loading screen html data:\(request)", logLevel: .all)
@@ -110,29 +115,29 @@ public class ApphudHttpClient {
     private func cachedScreenData(id: String) -> Data? {
         guard var url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
         url = url.appendingPathComponent(id).appendingPathExtension("html")
-        
+
         if FileManager.default.fileExists(atPath: url.path),
            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
            let creationDate = attrs[.creationDate] as? Date,
-           Date().timeIntervalSince(creationDate) < CACHE_TIMEOUT,
+           Date().timeIntervalSince(creationDate) < ApphudInternal.shared.cacheTimeout,
            let data = try? Data(contentsOf: url) {
             return data
         }
-        
+
         return nil
     }
-    
+
     private func cacheScreenData(id: String, html: Data) {
         guard var url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
         url = url.appendingPathComponent(id).appendingPathExtension("html")
-        
+
         if FileManager.default.fileExists(atPath: url.path) {
             try? FileManager.default.removeItem(at: url)
         }
-        
+
         try? html.write(to: url)
     }
-    
+
     internal func makeScreenRequest(screenID: String) -> URLRequest? {
 
         let deviceID: String = ApphudInternal.shared.currentDeviceID
@@ -144,6 +149,10 @@ public class ApphudHttpClient {
 
         return nil
     }
+    
+    private var requestID: String {
+        UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "") + "_" + String(Date().timeIntervalSince1970)
+    }
 
     private func makeRequest(path: String, apiVersion: ApphudApiVersion, params: [String: Any]?, method: ApphudHttpMethod) -> URLRequest? {
         var request: URLRequest?
@@ -154,7 +163,7 @@ public class ApphudHttpClient {
 
             if method == .get {
                 var components = URLComponents(string: urlString)
-                var items: [URLQueryItem] = [URLQueryItem(name: "api_key", value: apiKey)]
+                var items: [URLQueryItem] = [URLQueryItem(name: "api_key", value: apiKey), URLQueryItem(name: "request_id", value: requestID)]
                 if let requestParams = params {
                     for key in requestParams.keys {
                         items.append(URLQueryItem(name: key, value: requestParams[key] as? String))
@@ -169,34 +178,41 @@ public class ApphudHttpClient {
                 return nil
             }
 
+            var platform = "ios"
+            #if os(macOS)
+            platform = "macos"
+            #endif
+
             request = requestInstance(url: finalURL)
             request?.httpMethod = method.rawValue
             request?.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
             request?.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Accept")
-            request?.setValue("ios", forHTTPHeaderField: "X-Platform")
+            request?.setValue(platform, forHTTPHeaderField: "X-Platform")
+            request?.setValue(self.sdkType, forHTTPHeaderField: "X-SDK")
+            request?.setValue(sdkVersion, forHTTPHeaderField: "X-SDK-VERSION")
+            request?.setValue("Apphud \(platform) (\(self.sdkType) \(sdkVersion))", forHTTPHeaderField: "User-Agent")
             request?.timeoutInterval = method == .get ? GET_TIMEOUT : POST_PUT_TIMEOUT
             if method != .get {
-                var finalParams: [String: Any] = ["api_key": apiKey]
+                var finalParams: [String: Any] = ["api_key": apiKey, "request_id": requestID]
                 if params != nil {
                     finalParams.merge(params!, uniquingKeysWith: {$1})
                 }
-                let data = try JSONSerialization.data(withJSONObject: finalParams, options: [])
+                let data = try JSONSerialization.data(withJSONObject: finalParams, options: [.prettyPrinted])
                 request?.httpBody = data
             }
         } catch {
 
         }
 
-        do {
-            let string = String(data: try JSONSerialization.data(withJSONObject: params ?? [:], options: .prettyPrinted), encoding: .utf8)
+        var string: String = ""
+        if let data = request?.httpBody, let str = String(data: data, encoding: .utf8) {
+            string = str
+        }
 
-            if ApphudUtils.shared.logLevel == .all {
-                apphudLog("Start \(method) request \(request?.url?.absoluteString ?? "") params: \(string ?? "")", logLevel: .all)
-            } else {
-                apphudLog("Start \(method) request \(request?.url?.absoluteString ?? "")")
-            }
-
-        } catch {
+        if ApphudUtils.shared.logLevel == .all {
+            apphudLog("Start \(method) request \(request?.url?.absoluteString ?? "") params: \(string)", logLevel: .all)
+        } else {
+            apphudLog("Start \(method) request \(request?.url?.absoluteString ?? "")")
         }
 
         return request
@@ -221,7 +237,7 @@ public class ApphudHttpClient {
             var dictionary: [String: Any]?
 
             do {
-                if data != nil && (!useDecoder || apphudIsSandbox()){
+                if data != nil && (!useDecoder || apphudIsSandbox()) {
                     dictionary = try JSONSerialization.jsonObject(with: data!, options: []) as? [String: Any]
                 }
             } catch {
@@ -248,12 +264,6 @@ public class ApphudHttpClient {
 
                         callback?(true, dictionary, data, nil, code)
                         return
-                    } else if code == 401 {
-                        self.invalidAPiKey = true
-                        apphudLog("Unable to perform API requests, because your API Key is invalid.", forceDisplay: true)
-                    } else if code == 403 {
-                        self.unauthorized = true
-                        apphudLog("Unable to perform API requests, because your account has been suspended.", forceDisplay: true)
                     }
 
                     if ApphudUtils.shared.logLevel == .all {
@@ -263,11 +273,11 @@ public class ApphudHttpClient {
                     }
 
                     var finalError = error
-                    
+
                     if code == 422 && dictionary != nil {
                         finalError = self.parseError(dictionary!)
                     }
-                    
+
                     callback?(false, nil, data, finalError, code)
                 } else {
                     let code = (error as NSError?)?.code ?? NSURLErrorUnknown
@@ -277,7 +287,7 @@ public class ApphudHttpClient {
         }
         task.resume()
     }
-    
+
     private func parseError(_ dictionary: [String: Any]) -> Error? {
         if let errors = dictionary["errors"] as? [[String: Any]], let errorDict = errors.first, let errorMessage = errorDict["title"] as? String {
             return ApphudError(message: errorMessage)

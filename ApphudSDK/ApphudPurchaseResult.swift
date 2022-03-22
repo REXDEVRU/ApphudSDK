@@ -14,7 +14,7 @@ import StoreKit
  
  Using class instead of struct in order to support Objective-C
 */ 
-
+@available(OSX 10.14.4, *)
 public class ApphudPurchaseResult: NSObject {
 
     /**
@@ -48,7 +48,7 @@ public class ApphudPurchaseResult: NSObject {
         self.transaction = transaction
         self.error = error
     }
-    
+
     public override var description: String {
         """
             ApphudPurchaseResult:

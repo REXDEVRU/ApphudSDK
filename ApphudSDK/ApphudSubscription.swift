@@ -33,6 +33,8 @@ import Foundation
 /*
  To be visible in Objective-C this has to be an NSObject inherited class
  */
+
+@available(OSX 10.14.4, *)
 public class ApphudSubscription: NSObject {
 
     /**
@@ -78,12 +80,12 @@ public class ApphudSubscription: NSObject {
      Returns `true` if subscription is made in test environment, i.e. sandbox or local purchase.
      */
     @objc public let isSandbox: Bool
-    
+
     /**
      Returns `true` if subscription was made using Local StoreKit Configuration File. Read more: https://docs.apphud.com/getting-started/sandbox#testing-purchases-using-local-storekit-configuration-file
      */
     @objc public let isLocal: Bool
-    
+
     /**
      Means that subscription has failed billing, but Apple will try to charge the user later.
      */
@@ -104,7 +106,7 @@ public class ApphudSubscription: NSObject {
     @objc public let isIntroductoryActivated: Bool
 
     @objc internal let id: String
-    
+
     @objc internal let groupId: String
 
     // MARK: - Private methods

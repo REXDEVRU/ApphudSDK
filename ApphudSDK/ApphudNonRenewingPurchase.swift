@@ -24,12 +24,12 @@ public class ApphudNonRenewingPurchase: NSObject {
      Canceled date of in-app purchase, i.e. refund date. Nil if in-app purchase is not refunded.
      */
     @objc public let canceledAt: Date?
-    
+
     /**
      Returns `true` if purchase is made in test environment, i.e. sandbox or local purchase.
      */
     @objc public let isSandbox: Bool
-    
+
     /**
      Returns `true` if purchase was made using Local StoreKit Configuration File. Read more: https://docs.apphud.com/getting-started/sandbox#testing-purchases-using-local-storekit-configuration-file
      */
@@ -38,9 +38,10 @@ public class ApphudNonRenewingPurchase: NSObject {
     // MARK: - Private methods
 
     /// Subscription private initializer
+    @available(OSX 10.14.4, *)
     init?(dictionary: [String: Any]) {
         guard dictionary["kind"] as? String == "nonrenewable" else {return nil}
-        
+
         canceledAt =  (dictionary["cancelled_at"] as? String ?? "").apphudIsoDate
         purchasedAt = (dictionary["started_at"] as? String ?? "").apphudIsoDate ?? Date()
         productId = dictionary["product_id"] as? String ?? ""
