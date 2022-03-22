@@ -7,12 +7,14 @@
 //
 
 import Foundation
-import UIKit
 import UserNotifications
+#if canImport(UIKit)
+import UIKit
+#endif
 
+#if canImport(UIKit)
 @available(iOS 11.2, *)
 internal class ApphudRulesManager {
-
     static let shared = ApphudRulesManager()
     var pendingController: UIViewController?
 
@@ -44,7 +46,7 @@ internal class ApphudRulesManager {
             apphudLog("Got APS info, but app is not yet active, waiting for app to be active, then will handle push notification.", forceDisplay: true)
             return
         }
-        
+
         guard let rule_id = apsInfo?["rule_id"] as? String else {
             return
         }
@@ -75,6 +77,7 @@ internal class ApphudRulesManager {
         guard self.pendingController == nil else { return }
         guard rule.screen_id.count > 0 else { return }
         guard ApphudInternal.shared.uiDelegate?.apphudShouldPerformRule?(rule: rule) ?? true else {
+            ApphudInternal.shared.readAllNotifications(for: rule.id)
             apphudLog("apphudShouldPerformRule returned false for rule \(rule.rule_name), exiting", forceDisplay: true)
             return
         }
@@ -89,6 +92,7 @@ internal class ApphudRulesManager {
         if ApphudInternal.shared.uiDelegate?.apphudShouldShowScreen?(screenName: rule.screen_name) ?? true {
              showPendingScreen()
         } else {
+            ApphudInternal.shared.readAllNotifications(for: rule.id)
             apphudLog("apphudShouldShowScreen returned false for screen \(rule.screen_name), exiting", forceDisplay: true)
         }
     }
@@ -114,7 +118,7 @@ internal class ApphudRulesManager {
             return nil
         }
     }
-    
+
     internal func cacheActiveScreens() {
         ApphudInternal.shared.getActiveRuleScreens { ids in
             ids.forEach { id in
@@ -123,3 +127,5 @@ internal class ApphudRulesManager {
         }
     }
 }
+
+    #endif

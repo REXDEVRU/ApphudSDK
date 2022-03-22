@@ -6,8 +6,8 @@
 //  Copyright © 2019 Apphud Inc. All rights reserved.
 //
 
-import UIKit
 import Security
+import Foundation
 
 // Constant Identifiers
 let userAccount = "ApphudUser"

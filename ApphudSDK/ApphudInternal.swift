@@ -11,6 +11,7 @@ import StoreKit
 
 internal typealias HasPurchasesChanges = (hasSubscriptionChanges: Bool, hasNonRenewingChanges: Bool)
 
+@available(OSX 10.14.4, *)
 @available(iOS 11.2, *)
 final class ApphudInternal: NSObject {
 
@@ -66,7 +67,7 @@ final class ApphudInternal: NSObject {
     internal var pendingUserProperties = [ApphudUserProperty]()
     internal var lastCheckDate = Date()
     internal var userRegisterRetriesCount: Int = 0
-    internal let maxNumberOfUserRegisterRetries: Int = 10
+    internal let maxNumberOfUserRegisterRetries: Int = 25
     internal var paywallEventsRetriesCount: Int = 0
     internal let maxNumberOfPaywallEventsRetries: Int = 25
     internal var didRetrievePaywallsAtThisLaunch: Bool = false
@@ -105,11 +106,14 @@ final class ApphudInternal: NSObject {
     internal let didSubmitAdjustAttributionKey = "didSubmitAdjustAttributionKey"
     internal let didSubmitProductPricesKey = "didSubmitProductPricesKey"
     internal let submittedFirebaseIdKey = "submittedFirebaseIdKey"
+    internal let submittedAFDataKey = "submittedAFDataKey"
+    internal let submittedAdjustDataKey = "submittedAdjustDataKey"
     internal var didSubmitAppleAdsAttributionKey = "didSubmitAppleAdsAttributionKey"
+    internal let submittedPushTokenKey = "submittedPushTokenKey"
     internal var isSendingAppsFlyer = false
     internal var isSendingAdjust = false
     internal var isFreshInstall = true
-    
+
     internal var didSubmitAppsFlyerAttribution: Bool {
         get {
             UserDefaults.standard.bool(forKey: didSubmitAppsFlyerAttributionKey)
@@ -150,12 +154,52 @@ final class ApphudInternal: NSObject {
             UserDefaults.standard.set(newValue, forKey: didSubmitAppleAdsAttributionKey)
         }
     }
+    internal var submittedAFData: [AnyHashable: Any]? {
+        get {
+            let cache = apphudDataFromCache(key: submittedAFDataKey, cacheTimeout: 86_400*7)
+            if let data = cache.objectsData, !cache.expired,
+                let object = try? JSONSerialization.jsonObject(with: data, options: []) as? [AnyHashable: Any] {
+                return object
+            } else {
+                return nil
+            }
+        }
+        set {
+            if newValue != nil, let data = try? JSONSerialization.data(withJSONObject: newValue!, options: .prettyPrinted) {
+                apphudDataToCache(data: data, key: submittedAFDataKey)
+            }
+        }
+    }
+    internal var submittedAdjustData: [AnyHashable: Any]? {
+        get {
+            let cache = apphudDataFromCache(key: submittedAdjustDataKey, cacheTimeout: 86_400*7)
+            if let data = cache.objectsData, !cache.expired,
+                let object = try? JSONSerialization.jsonObject(with: data, options: []) as? [AnyHashable: Any] {
+                return object
+            } else {
+                return nil
+            }
+        }
+        set {
+            if newValue != nil, let data = try? JSONSerialization.data(withJSONObject: newValue!, options: .prettyPrinted) {
+                apphudDataToCache(data: data, key: submittedAdjustDataKey)
+            }
+        }
+    }
     internal var submittedFirebaseId: String? {
         get {
             UserDefaults.standard.string(forKey: submittedFirebaseIdKey)
         }
         set {
             UserDefaults.standard.set(newValue, forKey: submittedFirebaseIdKey)
+        }
+    }
+    internal var submittedPushToken: String? {
+        get {
+            UserDefaults.standard.string(forKey: submittedPushTokenKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: submittedPushTokenKey)
         }
     }
 
@@ -167,7 +211,7 @@ final class ApphudInternal: NSObject {
             ApphudStoreKitWrapper.shared.setupObserver()
             httpClient = ApphudHttpClient.shared
             httpClient!.apiKey = apiKey
-            apphudLog("Started Apphud SDK (\(apphud_sdk_version))", forceDisplay: true)
+            apphudLog("Started Apphud SDK (\(ApphudHttpClient.shared.sdkVersion))", forceDisplay: true)
         }
 
         guard allowIdentifyUser == true else {
@@ -186,7 +230,7 @@ final class ApphudInternal: NSObject {
         var deviceID = ApphudKeychain.loadDeviceID()
 
         isFreshInstall = deviceID == nil
-        
+
         if inputDeviceID?.count ?? 0 > 0 {
             deviceID = inputDeviceID
         }
@@ -213,15 +257,40 @@ final class ApphudInternal: NSObject {
             self.currentUserID = generatedUUID
         }
 
+        var isIdenticalUserIds = true
         if self.currentUserID != userIDFromKeychain {
+            isIdenticalUserIds = false
             ApphudKeychain.saveUserID(userID: self.currentUserID)
         }
 
-        self.productGroups = cachedGroups() ?? []
-        self.paywalls = cachedPaywalls() ?? []
-        
+        let cachedGroups = cachedGroups()
+        self.productGroups = cachedGroups.objects ?? []
+
+        let cachedPwls = cachedPaywalls()
+        self.paywalls = cachedPwls.objects ?? []
+
         DispatchQueue.main.async {
-            self.continueToRegisteringUser()
+            self.continueToRegisteringUser(skipRegistration: self.skipRegistration(isIdenticalUserIds: isIdenticalUserIds, hasCashedUser: self.currentUser != nil, hasCachedPaywalls: !cachedPwls.expired), needToUpdateProductGroups: cachedGroups.expired)
+        }
+    }
+
+    private func skipRegistration(isIdenticalUserIds: Bool, hasCashedUser: Bool, hasCachedPaywalls: Bool) -> Bool {
+        return isIdenticalUserIds && hasCashedUser && hasCachedPaywalls && !isUserCacheExpired() && !isUserPaid()
+    }
+
+    private func isUserPaid() -> Bool {
+       return self.currentUser?.subscriptions.count ?? 0 > 0 || self.currentUser?.purchases.count ?? 0 > 0
+    }
+
+    internal var cacheTimeout: TimeInterval {
+        apphudIsSandbox() ? 60 : 86400
+    }
+
+    private func isUserCacheExpired() -> Bool {
+        if let lastUserUpdatedDate = ApphudLoggerService.lastUserUpdatedAt, Date().timeIntervalSince(lastUserUpdatedDate) < cacheTimeout {
+            return false
+        } else {
+            return true
         }
     }
 
@@ -232,20 +301,20 @@ final class ApphudInternal: NSObject {
         apphudLog("User logged out. Apphud SDK is uninitialized.", logLevel: .all)
     }
 
-    internal func continueToRegisteringUser() {
+    internal func continueToRegisteringUser(skipRegistration: Bool = false, needToUpdateProductGroups: Bool = true) {
         guard !isRegisteringUser else {return}
         isRegisteringUser = true
-        continueToFetchProducts()
-        registerUser()
+        continueToFetchProducts(needToUpdateProductGroups: needToUpdateProductGroups)
+        registerUser(skipRegistration: skipRegistration)
     }
-    
-    @objc private func registerUser() {
-        createOrGetUser(shouldUpdateUserID: true) { success, errorCode in
+
+    @objc private func registerUser(skipRegistration: Bool = false) {
+        createOrGetUser(shouldUpdateUserID: true, skipRegistration: skipRegistration) { success, errorCode in
 
             self.isRegisteringUser = false
             self.setupObservers()
             self.checkPendingRules()
-            
+
             if success {
                 apphudLog("User successfully registered with id: \(self.currentUserID)", forceDisplay: true)
                 self.performAllUserRegisteredBlocks()
@@ -265,10 +334,10 @@ final class ApphudInternal: NSObject {
             apphudLog("Reached max number of user register retries \(userRegisterRetriesCount). Exiting..", forceDisplay: true)
             return
         }
-        
+
         let retryImmediately = [NSURLErrorRedirectToNonExistentLocation, NSURLErrorUnknown, NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost]
         let noInternetError = [NSURLErrorNotConnectedToInternet, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost]
-        
+
         let delay: TimeInterval
 
         if retryImmediately.contains(errorCode) {
@@ -279,7 +348,7 @@ final class ApphudInternal: NSObject {
             delay = 3.0
             userRegisterRetriesCount += 1
         }
-        
+
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(registerUser), object: nil)
         perform(#selector(registerUser), with: nil, afterDelay: delay)
         apphudLog("Scheduled user register retry in \(delay) seconds.", forceDisplay: true)
@@ -288,30 +357,42 @@ final class ApphudInternal: NSObject {
     // MARK: - Other
 
     private func setupObservers() {
+        #if os(macOS)
+        if !addedObservers {
+            NotificationCenter.default.addObserver(self, selector: #selector(handleDidBecomeActive), name: NSApplication.didBecomeActiveNotification, object: nil)
+            addedObservers = true
+        }
+        #else
         if !addedObservers {
             NotificationCenter.default.addObserver(self, selector: #selector(handleDidBecomeActive), name: UIApplication.didBecomeActiveNotification, object: nil)
             addedObservers = true
         }
+        #endif
     }
 
     private func checkPendingRules() {
+        #if canImport(UIKit)
         performWhenUserRegistered {
             ApphudRulesManager.shared.handlePendingAPSInfo()
         }
+        #endif
     }
-    
+
     @objc private func handleDidBecomeActive() {
 
         let minCheckInterval: Double = 60
 
         checkPendingRules()
-        
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             if self.currentUser == nil {
                 self.continueToRegisteringUser()
             } else if Date().timeIntervalSince(self.lastCheckDate) > minCheckInterval {
+                self.lastCheckDate = Date()
                 self.checkForUnreadNotifications()
-                self.updateCurrentUser()
+                if self.isUserCacheExpired() && self.isUserPaid() {
+                    self.setNeedsToUpdateUser = true
+                }
             }
         }
     }
@@ -324,6 +405,9 @@ final class ApphudInternal: NSObject {
             callback()
             return true
         } else {
+            if userRegisterRetriesCount >= maxNumberOfUserRegisterRetries {
+                continueToRegisteringUser()
+            }
             userRegisteredCallbacks.append(callback)
             return false
         }
@@ -361,7 +445,7 @@ final class ApphudInternal: NSObject {
             productGroupsFetchedCallbacks.removeAll()
         }
     }
-    
+
     /// Returns false if products groups map dictionary not yet received, block is added to array and will be performed later.
     @discardableResult internal func performWhenStoreKitProductFetched(callback : @escaping ApphudVoidCallback) -> Bool {
         if ApphudStoreKitWrapper.shared.didFetch {
@@ -372,7 +456,7 @@ final class ApphudInternal: NSObject {
             return false
         }
     }
-    
+
     internal func performAllStoreKitProductsFetchedCallbacks() {
         for block in storeKitProductsFetchedCallbacks {
             apphudLog("Performing scheduled block..")
@@ -388,15 +472,39 @@ final class ApphudInternal: NSObject {
 
     internal func submitPushNotificationsToken(token: Data, callback: ApphudBoolCallback?) {
         performWhenUserRegistered {
+
             let tokenString = token.map { String(format: "%02.2hhx", $0) }.joined()
+            guard tokenString != "", self.submittedPushToken != tokenString else {
+                apphudLog("Already submitted the same push token, exiting")
+                callback?(true)
+                return
+            }
             let params: [String: String] = ["device_id": self.currentDeviceID, "push_token": tokenString]
             self.httpClient?.startRequest(path: "customers/push_token", params: params, method: .put) { (result, _, _, _, _) in
+                if result {
+                    self.submittedPushToken = tokenString
+                }
                 callback?(result)
             }
         }
     }
 
     // MARK: - V2 API
+
+    internal func trackDurationLogs(params: [[String: AnyHashable]], callback: @escaping () -> Void) {
+        let result = performWhenUserRegistered {
+            let final_params: [String: AnyHashable] = ["device_id": self.currentDeviceID,
+                                                       "user_id": self.currentUserID,
+                                                       "bundle_id": Bundle.main.bundleIdentifier,
+                                                       "data": params]
+            self.httpClient?.startRequest(path: "logs", apiVersion: .APIV2, params: final_params, method: .post) { (_, _, _, _, _) in
+                callback()
+            }
+        }
+        if !result {
+            apphudLog("Tried to send logs, but user not yet registered, adding to schedule")
+        }
+    }
 
     internal func trackEvent(params: [String: AnyHashable], callback: @escaping () -> Void) {
         let result = performWhenUserRegistered {
@@ -409,7 +517,7 @@ final class ApphudInternal: NSObject {
             apphudLog("Tried to trackRuleEvent, but user not yet registered, adding to schedule")
         }
     }
-    
+
     @objc internal func trackPaywallEvent(params: [String: AnyHashable]) {
         submitPaywallEvent(params: params) { (result, _, _, _, code) in
             if !result {
@@ -417,7 +525,7 @@ final class ApphudInternal: NSObject {
             }
         }
     }
-    
+
     private func schedulePaywallEvent(_ params: [String: AnyHashable], _ noInternetError: Bool) {
         guard httpClient != nil, httpClient!.canRetry else {
             return
@@ -426,7 +534,7 @@ final class ApphudInternal: NSObject {
             apphudLog("Reached max number of paywall events retries \(paywallEventsRetriesCount). Exiting..", forceDisplay: true)
             return
         }
-        
+
         let delay: TimeInterval
 
         if noInternetError {
@@ -435,40 +543,40 @@ final class ApphudInternal: NSObject {
             delay = 5.0
             paywallEventsRetriesCount += 1
         }
-        
+
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(trackPaywallEvent(params:)), object: nil)
         perform(#selector(trackPaywallEvent(params:)), with: params, afterDelay: delay)
         apphudLog("Scheduled paywall events retry in \(delay) seconds.", forceDisplay: true)
     }
-    
+
     internal func submitPaywallEvent(params: [String: AnyHashable], callback: @escaping ApphudHTTPResponseCallback) {
         let result = performWhenUserRegistered {
             let environment = Apphud.isSandbox() ? "sandbox" : "production"
             let final_params: [String: AnyHashable] = ["device_id": self.currentDeviceID,
                                                        "user_id": self.currentUserID,
-                                                       "timestamp": Date().currentTimestamp(),
+                                                       "timestamp": Date().currentTimestamp,
                                                        "environment": environment].merging(params, uniquingKeysWith: {(current, _) in current})
-            
+
             self.httpClient?.startRequest(path: "events", apiVersion: .APIV1, params: final_params, method: .post, callback: callback)
         }
         if !result {
             apphudLog("Tried to trackPaywallEvent, but user not yet registered, adding to schedule")
         }
     }
-    
+
     internal func logEvent(params: [String: AnyHashable], callback: @escaping () -> Void) {
 
         let result = performWhenUserRegistered {
             let environment = Apphud.isSandbox() ? "sandbox" : "production"
             var final_params: [String: AnyHashable] = ["device_id": self.currentDeviceID,
                                                        "user_id": self.currentUserID,
-                                                       "timestamp": Date().currentTimestamp(),
+                                                       "timestamp": Date().currentTimestamp,
                                                        "environment": environment].merging(params, uniquingKeysWith: {(current, _) in current})
-            
+
             if let bundleID = Bundle.main.bundleIdentifier {
                 final_params["bundle_id"] = bundleID
             }
-            
+
             self.httpClient?.startRequest(path: "logs", apiVersion: .APIV1, params: final_params, method: .post) { (_, _, _, _, _) in
                 callback()
             }
@@ -499,6 +607,7 @@ final class ApphudInternal: NSObject {
     }
 
     internal func checkForUnreadNotifications() {
+        #if canImport(UIKit)
         performWhenUserRegistered {
             let params = ["device_id": self.currentDeviceID] as [String: String]
             self.httpClient?.startRequest(path: "notifications", apiVersion: .APIV2, params: params, method: .get, callback: { (result, response, _, _, _) in
@@ -511,6 +620,7 @@ final class ApphudInternal: NSObject {
                 }
             })
         }
+        #endif
     }
 
     internal func readAllNotifications(for ruleID: String) {
@@ -520,10 +630,10 @@ final class ApphudInternal: NSObject {
             })
         }
     }
-    
+
     internal func getActiveRuleScreens(_ callback: @escaping ([String]) -> Void) {
         performWhenUserRegistered {
-            self.httpClient?.startRequest(path: "rules/screens", apiVersion: .APIV2, params: nil, method: .get) { result, response, _, error, code in
+            self.httpClient?.startRequest(path: "rules/screens", apiVersion: .APIV2, params: nil, method: .get) { result, response, _, _, _ in
                 if result, let dataDict = response?["data"] as? [String: Any], let screensIdsArray = dataDict["results"] as? [String] {
                     callback(screensIdsArray)
                 } else {
@@ -535,7 +645,8 @@ final class ApphudInternal: NSObject {
 }
 
 extension Date {
-    func currentTimestamp() -> Int64 {
-        return Int64(self.timeIntervalSince1970 * 1000)
+    /// Returns current Timestamp
+    var currentTimestamp: Int64 {
+      Int64(self.timeIntervalSince1970 * 1000)
     }
 }
